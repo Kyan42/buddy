@@ -53,24 +53,6 @@ class OverlayWindow: NSWindow {
 }
 
 // Cursor-like triangle shape (equilateral)
-struct Triangle: Shape {
-    func path(in rect: CGRect) -> Path {
-        var path = Path()
-        let size = min(rect.width, rect.height)
-        let height = size * sqrt(3.0) / 2.0
-
-        // Top vertex
-        path.move(to: CGPoint(x: rect.midX, y: rect.midY - height / 1.5))
-        // Bottom left vertex
-        path.addLine(to: CGPoint(x: rect.midX - size / 2, y: rect.midY + height / 3))
-        // Bottom right vertex
-        path.addLine(to: CGPoint(x: rect.midX + size / 2, y: rect.midY + height / 3))
-        path.closeSubpath()
-        return path
-    }
-}
-
-// PreferenceKey for tracking bubble size
 struct SizePreferenceKey: PreferenceKey {
     static var defaultValue: CGSize = .zero
     static func reduce(value: inout CGSize, nextValue: () -> CGSize) {
@@ -165,12 +147,18 @@ struct BlueCursorView: View {
     /// Only during the return flight can cursor movement cancel the animation.
     @State private var isReturningToCursor: Bool = false
 
+    /// Bumped every time the buddy arrives somewhere new, so an older
+    /// "hold, then fly home" timer can't cut a newer point short.
+    @State private var pointingHoldGeneration: Int = 0
+    /// The pen flight this screen is currently showing, if any.
+    @State private var activePenFlightRequestID: UUID?
+
     // MARK: - Onboarding Video Layout
 
     private let onboardingVideoPlayerWidth: CGFloat = 330
     private let onboardingVideoPlayerHeight: CGFloat = 186
 
-    private let fullWelcomeMessage = "hey! i'm clicky"
+    private let fullWelcomeMessage = "hey! i'm buddy"
 
     private let navigationPointerPhrases = [
         "right here!",
@@ -195,8 +183,12 @@ struct BlueCursorView: View {
                     .padding(.vertical, 4)
                     .background(
                         RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .fill(DS.Colors.overlayCursorBlue)
-                            .shadow(color: DS.Colors.overlayCursorBlue.opacity(0.5), radius: 6, x: 0, y: 0)
+                            .fill(DS.Colors.overlayCoreBuddyBody)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                    .stroke(DS.Colors.overlayCoreBuddyCyan.opacity(0.8), lineWidth: 1)
+                            )
+                            .shadow(color: DS.Colors.overlayCoreBuddyCyan.opacity(0.35), radius: 6, x: 0, y: 0)
                     )
                     .fixedSize()
                     .overlay(
@@ -206,7 +198,7 @@ struct BlueCursorView: View {
                         }
                     )
                     .opacity(bubbleOpacity)
-                    .position(x: cursorPosition.x + 10 + (bubbleSize.width / 2), y: cursorPosition.y + 18)
+                    .position(x: cursorPosition.x + 16 + (bubbleSize.width / 2), y: cursorPosition.y + 20)
                     .animation(.spring(response: 0.2, dampingFraction: 0.6, blendDuration: 0), value: cursorPosition)
                     .animation(.easeOut(duration: 0.5), value: bubbleOpacity)
                     .onPreferenceChange(SizePreferenceKey.self) { newSize in
@@ -239,8 +231,12 @@ struct BlueCursorView: View {
                     .padding(.vertical, 4)
                     .background(
                         RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .fill(DS.Colors.overlayCursorBlue)
-                            .shadow(color: DS.Colors.overlayCursorBlue.opacity(0.5), radius: 6, x: 0, y: 0)
+                            .fill(DS.Colors.overlayCoreBuddyBody)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                    .stroke(DS.Colors.overlayCoreBuddyCyan.opacity(0.8), lineWidth: 1)
+                            )
+                            .shadow(color: DS.Colors.overlayCoreBuddyCyan.opacity(0.35), radius: 6, x: 0, y: 0)
                     )
                     .fixedSize()
                     .overlay(
@@ -250,7 +246,7 @@ struct BlueCursorView: View {
                         }
                     )
                     .opacity(companionManager.onboardingPromptOpacity)
-                    .position(x: cursorPosition.x + 10 + (bubbleSize.width / 2), y: cursorPosition.y + 18)
+                    .position(x: cursorPosition.x + 16 + (bubbleSize.width / 2), y: cursorPosition.y + 20)
                     .animation(.spring(response: 0.2, dampingFraction: 0.6, blendDuration: 0), value: cursorPosition)
                     .animation(.easeOut(duration: 0.4), value: companionManager.onboardingPromptOpacity)
                     .onPreferenceChange(SizePreferenceKey.self) { newSize in
@@ -269,9 +265,13 @@ struct BlueCursorView: View {
                     .padding(.vertical, 4)
                     .background(
                         RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .fill(DS.Colors.overlayCursorBlue)
+                            .fill(DS.Colors.overlayCoreBuddyBody)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                    .stroke(DS.Colors.overlayCoreBuddyCyan.opacity(0.8), lineWidth: 1)
+                            )
                             .shadow(
-                                color: DS.Colors.overlayCursorBlue.opacity(0.5 + (1.0 - navigationBubbleScale) * 1.0),
+                                color: DS.Colors.overlayCoreBuddyCyan.opacity(0.35 + (1.0 - navigationBubbleScale) * 1.0),
                                 radius: 6 + (1.0 - navigationBubbleScale) * 16,
                                 x: 0, y: 0
                             )
@@ -285,7 +285,7 @@ struct BlueCursorView: View {
                     )
                     .scaleEffect(navigationBubbleScale)
                     .opacity(navigationBubbleOpacity)
-                    .position(x: cursorPosition.x + 10 + (navigationBubbleSize.width / 2), y: cursorPosition.y + 18)
+                    .position(x: cursorPosition.x + 16 + (navigationBubbleSize.width / 2), y: cursorPosition.y + 20)
                     .animation(.spring(response: 0.2, dampingFraction: 0.6, blendDuration: 0), value: cursorPosition)
                     .animation(.spring(response: 0.4, dampingFraction: 0.6), value: navigationBubbleScale)
                     .animation(.easeOut(duration: 0.5), value: navigationBubbleOpacity)
@@ -294,21 +294,32 @@ struct BlueCursorView: View {
                     }
             }
 
-            // Blue triangle cursor — shown when idle or while TTS is playing (responding).
-            // All three states (triangle, waveform, spinner) stay in the view tree
-            // permanently and cross-fade via opacity so SwiftUI doesn't remove/re-insert
-            // them (which caused a visible cursor "pop").
+            // Pen marks Claude draws while talking (circles, underlines, highlights,
+            // arrows). Below the cursor so the "pen" stays on top of its ink.
+            ClickyScreenMarksLayer(
+                screenMarks: companionManager.screenMarksBeingShown,
+                screenFrame: screenFrame,
+                boardWindowFrame: companionManager.boardWindowFrameOnScreen
+            )
+            .equatable()
+
+            // Clicky's cursor: the "Core" orb with a face (ClickyCoreBuddyCursorView).
+            // One view for every state, so it never pops between shapes; the face
+            // changes expression instead (listening, thinking, talking, looking).
             //
             // During cursor following: fast spring animation for snappy tracking.
             // During navigation: NO implicit animation — the frame-by-frame bezier
             // timer controls position directly at 60fps for a smooth arc flight.
-            Triangle()
-                .fill(DS.Colors.overlayCursorBlue)
-                .frame(width: 16, height: 16)
-                .rotationEffect(.degrees(triangleRotationDegrees))
-                .shadow(color: DS.Colors.overlayCursorBlue, radius: 8 + (buddyFlightScale - 1.0) * 20, x: 0, y: 0)
+            ClickyCoreBuddyCursorView(
+                expression: coreBuddyExpression,
+                gazeDirection: coreBuddyGazeDirection,
+                audioPowerLevel: companionManager.currentAudioPowerLevel,
+                isSpeaking: companionManager.isClickySpeakingAloud,
+                pointerRotationDegrees: triangleRotationDegrees,
+                flightScale: buddyFlightScale
+            )
                 .scaleEffect(buddyFlightScale)
-                .opacity(buddyIsVisibleOnThisScreen && (companionManager.voiceState == .idle || companionManager.voiceState == .responding) ? cursorOpacity : 0)
+                .opacity(buddyIsVisibleOnThisScreen ? cursorOpacity : 0)
                 .position(cursorPosition)
                 .animation(
                     buddyNavigationMode == .followingCursor
@@ -316,25 +327,10 @@ struct BlueCursorView: View {
                         : nil,
                     value: cursorPosition
                 )
-                .animation(.easeIn(duration: 0.25), value: companionManager.voiceState)
                 .animation(
                     buddyNavigationMode == .navigatingToTarget ? nil : .easeInOut(duration: 0.3),
                     value: triangleRotationDegrees
                 )
-
-            // Blue waveform — replaces the triangle while listening
-            BlueCursorWaveformView(audioPowerLevel: companionManager.currentAudioPowerLevel)
-                .opacity(buddyIsVisibleOnThisScreen && companionManager.voiceState == .listening ? cursorOpacity : 0)
-                .position(cursorPosition)
-                .animation(.spring(response: 0.2, dampingFraction: 0.6, blendDuration: 0), value: cursorPosition)
-                .animation(.easeIn(duration: 0.15), value: companionManager.voiceState)
-
-            // Blue spinner — shown while the AI is processing (transcription + Claude + waiting for TTS)
-            BlueCursorSpinnerView()
-                .opacity(buddyIsVisibleOnThisScreen && companionManager.voiceState == .processing ? cursorOpacity : 0)
-                .position(cursorPosition)
-                .animation(.spring(response: 0.2, dampingFraction: 0.6, blendDuration: 0), value: cursorPosition)
-                .animation(.easeIn(duration: 0.15), value: companionManager.voiceState)
 
         }
         .frame(width: screenFrame.width, height: screenFrame.height)
@@ -384,9 +380,51 @@ struct BlueCursorView: View {
 
             startNavigatingToElement(screenLocation: screenLocation)
         }
+        .onChange(of: companionManager.cursorPenFlightRequest) { _, newPenFlightRequest in
+            handlePenFlightRequest(newPenFlightRequest)
+        }
     }
 
-    /// Whether the buddy triangle should be visible on this screen.
+    /// The face Clicky makes right now, from what it's doing.
+    private var coreBuddyExpression: ClickyCoreBuddyExpression {
+        if companionManager.voiceState == .listening {
+            return .listening
+        }
+        // Flying to or holding at a target: become the cursor arrow.
+        if buddyNavigationMode != .followingCursor {
+            return .pointing
+        }
+        if companionManager.voiceState == .processing {
+            return .thinking
+        }
+        // The voice often keeps talking long after Claude finished writing
+        // (voiceState is back to idle by then), so follow the audio itself.
+        if companionManager.isClickySpeakingAloud {
+            return .speaking
+        }
+        return .idle
+    }
+
+    /// Where Clicky's eyes look (x right, y down, length up to 1).
+    private var coreBuddyGazeDirection: CGVector {
+        switch buddyNavigationMode {
+        case .navigatingToTarget:
+            // Look where it's flying. triangleRotationDegrees is the travel
+            // angle plus 90° (it was the old triangle's rotation).
+            let travelAngleRadians = (triangleRotationDegrees - 90.0) * .pi / 180.0
+            return CGVector(dx: cos(travelAngleRadians), dy: sin(travelAngleRadians))
+        case .pointingAtTarget:
+            // The orb lands just below-right of the target (8 right, 12 down),
+            // so the thing it's pointing at is up and to the left.
+            return CGVector(dx: -0.55, dy: -0.83)
+        case .followingCursor:
+            // It trails your mouse from below-right, so a slight glance up-left
+            // reads as keeping an eye on you.
+            return CGVector(dx: -0.3, dy: -0.25)
+        }
+    }
+
+    /// Whether the buddy should be visible on this screen.
     /// True when cursor is on this screen during normal following, or
     /// when navigating/pointing at a target on this screen. When another
     /// screen is navigating (detectedElementScreenLocation is set but this
@@ -398,6 +436,10 @@ struct BlueCursorView: View {
             // If another screen's BlueCursorView is navigating to an element,
             // hide the cursor on this screen to prevent a duplicate buddy
             if companionManager.detectedElementScreenLocation != nil {
+                return false
+            }
+            if let penFlightRequest = companionManager.cursorPenFlightRequest,
+               penFlightRequest.displayFrame != screenFrame {
                 return false
             }
             return isCursorOnThisScreen
@@ -494,6 +536,8 @@ struct BlueCursorView: View {
     /// for a "swooping" feel, and the glow intensifies during flight.
     private func animateBezierFlightArc(
         to destination: CGPoint,
+        flightDurationRangeSeconds: ClosedRange<Double> = 0.6...1.4,
+        distancePerSecond: Double = 800,
         onComplete: @escaping () -> Void
     ) {
         navigationAnimationTimer?.invalidate()
@@ -506,8 +550,12 @@ struct BlueCursorView: View {
         let distance = hypot(deltaX, deltaY)
 
         // Flight duration scales with distance: short hops are quick, long
-        // flights are more dramatic. Clamped to 0.6s–1.4s.
-        let flightDurationSeconds = min(max(distance / 800.0, 0.6), 1.4)
+        // flights are more dramatic. Clamped to the given range (0.6s–1.4s by
+        // default; pen hops while talking use a much quicker range).
+        let flightDurationSeconds = min(
+            max(distance / distancePerSecond, flightDurationRangeSeconds.lowerBound),
+            flightDurationRangeSeconds.upperBound
+        )
         let frameInterval: Double = 1.0 / 60.0
         let totalFrames = Int(flightDurationSeconds / frameInterval)
         var currentFrame = 0
@@ -571,6 +619,8 @@ struct BlueCursorView: View {
     /// scale-in entrance and variable-speed character streaming.
     private func startPointingAtElement() {
         buddyNavigationMode = .pointingAtTarget
+        pointingHoldGeneration += 1
+        let holdGenerationForThisPoint = pointingHoldGeneration
 
         // Rotate back to default pointer angle now that we've arrived
         triangleRotationDegrees = -35.0
@@ -590,10 +640,12 @@ struct BlueCursorView: View {
         streamNavigationBubbleCharacter(phrase: pointerPhrase, characterIndex: 0) {
             // All characters streamed — hold for 3 seconds, then fly back
             DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
-                guard self.buddyNavigationMode == .pointingAtTarget else { return }
+                guard self.buddyNavigationMode == .pointingAtTarget,
+                      self.pointingHoldGeneration == holdGenerationForThisPoint else { return }
                 self.navigationBubbleOpacity = 0.0
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                    guard self.buddyNavigationMode == .pointingAtTarget else { return }
+                    guard self.buddyNavigationMode == .pointingAtTarget,
+                          self.pointingHoldGeneration == holdGenerationForThisPoint else { return }
                     self.startFlyingBackToCursor()
                 }
             }
@@ -670,6 +722,91 @@ struct BlueCursorView: View {
         navigationBubbleOpacity = 0.0
         navigationBubbleScale = 1.0
         companionManager.clearDetectedElementLocation()
+        if let finishedPenFlightRequestID = activePenFlightRequestID {
+            activePenFlightRequestID = nil
+            companionManager.cursorPenFlightReturnedHome(requestID: finishedPenFlightRequestID)
+        }
+    }
+
+    // MARK: - Pen Flights (cursor follows what Clicky is talking about)
+
+    /// Claude's voice reached a mark: hop the buddy there quickly. A nil request
+    /// means the reply was cleared (new push-to-talk), so head home.
+    private func handlePenFlightRequest(_ penFlightRequest: ClickyCursorPenFlightRequest?) {
+        guard let penFlightRequest else {
+            if activePenFlightRequestID != nil && buddyNavigationMode != .followingCursor && !isReturningToCursor {
+                pointingHoldGeneration += 1
+                navigationBubbleOpacity = 0.0
+                startFlyingBackToCursor()
+            }
+            return
+        }
+        guard penFlightRequest.displayFrame == screenFrame else { return }
+        // Don't interrupt the first-launch welcome animation.
+        guard !showWelcome || welcomeText.isEmpty else { return }
+
+        activePenFlightRequestID = penFlightRequest.requestID
+        pointingHoldGeneration += 1
+        navigationBubbleOpacity = 0.0
+
+        let targetInSwiftUI = convertScreenPointToSwiftUICoordinates(penFlightRequest.globalDestination)
+        // Sit just beside the target (like the original pointing offset) and stay on screen.
+        let penTarget = CGPoint(
+            x: max(20, min(targetInSwiftUI.x + 8, screenFrame.width - 20)),
+            y: max(20, min(targetInSwiftUI.y + 12, screenFrame.height - 20))
+        )
+
+        if buddyNavigationMode == .followingCursor {
+            cursorPositionWhenNavigationStarted = convertScreenPointToSwiftUICoordinates(NSEvent.mouseLocation)
+        }
+        buddyNavigationMode = .navigatingToTarget
+        isReturningToCursor = false
+
+        // Quick hops (0.25–0.5s) so the pen keeps up with the voice.
+        animateBezierFlightArc(to: penTarget, flightDurationRangeSeconds: 0.25...0.5, distancePerSecond: 1800) {
+            guard self.buddyNavigationMode == .navigatingToTarget,
+                  self.activePenFlightRequestID == penFlightRequest.requestID else { return }
+            self.arriveAtPenTarget(penFlightRequest)
+        }
+    }
+
+    private func arriveAtPenTarget(_ penFlightRequest: ClickyCursorPenFlightRequest) {
+        buddyNavigationMode = .pointingAtTarget
+        triangleRotationDegrees = -35.0
+        pointingHoldGeneration += 1
+        let holdGenerationForThisTarget = pointingHoldGeneration
+
+        // Only point marks carry a label; never show filler like "found it!".
+        navigationBubbleText = ""
+        navigationBubbleSize = .zero
+        if let bubbleText = penFlightRequest.bubbleText, !bubbleText.isEmpty {
+            navigationBubbleOpacity = 1.0
+            navigationBubbleScale = 0.5
+            streamNavigationBubbleCharacter(phrase: bubbleText, characterIndex: 0) {}
+        } else {
+            navigationBubbleOpacity = 0.0
+        }
+
+        holdAtPenTargetWhileTalking(holdGeneration: holdGenerationForThisTarget)
+    }
+
+    /// Stays at the latest mark while the reply is still being spoken, then
+    /// waits a beat and flies home.
+    private func holdAtPenTargetWhileTalking(holdGeneration: Int) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+            guard self.pointingHoldGeneration == holdGeneration,
+                  self.buddyNavigationMode == .pointingAtTarget else { return }
+            if self.companionManager.isReplyBeingSpokenWithPen {
+                self.holdAtPenTargetWhileTalking(holdGeneration: holdGeneration)
+                return
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                guard self.pointingHoldGeneration == holdGeneration,
+                      self.buddyNavigationMode == .pointingAtTarget else { return }
+                self.navigationBubbleOpacity = 0.0
+                self.startFlyingBackToCursor()
+            }
+        }
     }
 
     // MARK: - Welcome Animation
@@ -702,76 +839,6 @@ struct BlueCursorView: View {
     }
 }
 
-// MARK: - Blue Cursor Waveform
-
-/// A small blue waveform that replaces the triangle cursor while
-/// the user is holding the push-to-talk shortcut and speaking.
-private struct BlueCursorWaveformView: View {
-    let audioPowerLevel: CGFloat
-
-    private let barCount = 5
-    private let listeningBarProfile: [CGFloat] = [0.4, 0.7, 1.0, 0.7, 0.4]
-
-    var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 36.0)) { timelineContext in
-            HStack(alignment: .center, spacing: 2) {
-                ForEach(0..<barCount, id: \.self) { barIndex in
-                    RoundedRectangle(cornerRadius: 1.5, style: .continuous)
-                        .fill(DS.Colors.overlayCursorBlue)
-                        .frame(
-                            width: 2,
-                            height: barHeight(
-                                for: barIndex,
-                                timelineDate: timelineContext.date
-                            )
-                        )
-                }
-            }
-            .shadow(color: DS.Colors.overlayCursorBlue.opacity(0.6), radius: 6, x: 0, y: 0)
-            .animation(.linear(duration: 0.08), value: audioPowerLevel)
-        }
-    }
-
-    private func barHeight(for barIndex: Int, timelineDate: Date) -> CGFloat {
-        let animationPhase = CGFloat(timelineDate.timeIntervalSinceReferenceDate * 3.6) + CGFloat(barIndex) * 0.35
-        let normalizedAudioPowerLevel = max(audioPowerLevel - 0.008, 0)
-        let easedAudioPowerLevel = pow(min(normalizedAudioPowerLevel * 2.85, 1), 0.76)
-        let reactiveHeight = easedAudioPowerLevel * 10 * listeningBarProfile[barIndex]
-        let idlePulse = (sin(animationPhase) + 1) / 2 * 1.5
-        return 3 + reactiveHeight + idlePulse
-    }
-}
-
-// MARK: - Blue Cursor Spinner
-
-/// A small blue spinning indicator that replaces the triangle cursor
-/// while the AI is processing a voice input.
-private struct BlueCursorSpinnerView: View {
-    @State private var isSpinning = false
-
-    var body: some View {
-        Circle()
-            .trim(from: 0.15, to: 0.85)
-            .stroke(
-                AngularGradient(
-                    colors: [
-                        DS.Colors.overlayCursorBlue.opacity(0.0),
-                        DS.Colors.overlayCursorBlue
-                    ],
-                    center: .center
-                ),
-                style: StrokeStyle(lineWidth: 2.5, lineCap: .round)
-            )
-            .frame(width: 14, height: 14)
-            .rotationEffect(.degrees(isSpinning ? 360 : 0))
-            .shadow(color: DS.Colors.overlayCursorBlue.opacity(0.6), radius: 6, x: 0, y: 0)
-            .onAppear {
-                withAnimation(.linear(duration: 0.8).repeatForever(autoreverses: false)) {
-                    isSpinning = true
-                }
-            }
-    }
-}
 
 // Manager for overlay windows — creates one per screen so the cursor
 // buddy seamlessly follows the cursor across multiple monitors.

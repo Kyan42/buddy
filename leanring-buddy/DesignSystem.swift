@@ -142,6 +142,9 @@ enum DS {
         /// Kept distinct from the accent since it serves a different purpose
         /// (screen overlay vs in-app UI).
         static let overlayCursorBlue = Color(hex: "#3380FF")
+        /// Clicky's "Core" cursor: a dark navy orb with a cyan rim and cyan eyes.
+        static let overlayCoreBuddyBody = Color(hex: "#0E1A2B")
+        static let overlayCoreBuddyCyan = Color(hex: "#5CE1FF")
 
         // ── Floating Button Gradient ─────────────────────────────────
 

@@ -49,7 +49,11 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
         if !companionManager.hasCompletedOnboarding || !companionManager.allPermissionsGranted {
             menuBarPanelManager?.showPanelOnLaunch()
         }
-        registerAsLoginItemIfNeeded()
+        // Launch-at-login is off while developing: macOS would start an old build
+        // at login next to the one Xcode runs, giving two Clickys (two hotkey
+        // listeners, two Claude sessions). Also removes any earlier registration.
+        // Swap back to registerAsLoginItemIfNeeded() once the app is stable.
+        unregisterLoginItemIfRegistered()
         // startSparkleUpdater()
     }
 
@@ -69,6 +73,19 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
             } catch {
                 print("⚠️ Clicky: Failed to register as login item: \(error)")
             }
+        }
+    }
+
+    /// Removes Clicky from System Settings > General > Login Items if an
+    /// earlier build registered it.
+    private func unregisterLoginItemIfRegistered() {
+        let loginItemService = SMAppService.mainApp
+        guard loginItemService.status == .enabled || loginItemService.status == .requiresApproval else { return }
+        do {
+            try loginItemService.unregister()
+            print("🎯 Clicky: Removed login item (launch-at-login is off while developing)")
+        } catch {
+            print("⚠️ Clicky: Failed to remove login item: \(error)")
         }
     }
 
