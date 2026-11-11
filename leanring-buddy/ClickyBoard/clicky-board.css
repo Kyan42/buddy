@@ -1,0 +1,70 @@
+@font-face {
+  font-family: "ClickyHand";
+  src: url("ClickyBoard-Caveat.ttf") format("truetype");
+  font-weight: 400 700;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  -webkit-user-select: none;
+  user-select: none;
+  cursor: default;
+}
+
+/* Paper with a faint square grid, like a math notebook. */
+body {
+  background-color: #FBFAF6;
+  background-image:
+    linear-gradient(rgba(60, 90, 140, 0.07) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(60, 90, 140, 0.07) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+body.plain-paper { background-image: none; }
+
+/* The drawing space is always 1000x625 board units, scaled to fit the window
+   (clicky-board.js sets the transform). Every layer shares that space. */
+#board-stage {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 1000px;
+  height: 625px;
+  transform-origin: 0 0;
+}
+#highlight-layer, #words-layer, #ink-layer {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 1000px;
+  height: 625px;
+  overflow: visible;
+}
+
+.board-words {
+  position: absolute;
+  white-space: nowrap;
+  line-height: 1.15;
+  color: #2B2D33;
+}
+.board-words.hand { font-family: "ClickyHand", "Bradley Hand", cursive; }
+.board-words.clean { font-family: -apple-system, "SF Pro Text", "Helvetica Neue", sans-serif; }
+.board-words.wraps { white-space: normal; }
+.board-words .katex { font-size: 1em; }
+
+.board-table { border-collapse: collapse; }
+.board-table td {
+  padding: 4px 14px;
+  text-align: center;
+  border-bottom: 1.5px solid rgba(43, 45, 51, 0.25);
+}
+.board-table tr:first-child td.header { font-weight: 700; border-bottom: 2.5px solid rgba(43, 45, 51, 0.55); }
+
+.board-highlight {
+  position: absolute;
+  border-radius: 6px;
+  mix-blend-mode: multiply;
+}

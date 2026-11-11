@@ -1,0 +1,23 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- The board runs code Claude writes, so it gets no network at all: only the
+     bundled files next to this page can load. 'unsafe-eval' is what lets the
+     board run Claude's drawing snippets. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' file: 'unsafe-eval'; style-src 'self' file: 'unsafe-inline'; font-src 'self' file: data:; img-src 'self' file: data:; connect-src 'none'">
+<link rel="stylesheet" href="clicky-board-katex.min.css">
+<link rel="stylesheet" href="clicky-board.css">
+</head>
+<body>
+<div id="board-stage">
+  <div id="highlight-layer"></div>
+  <svg id="ink-layer" viewBox="0 0 1000 625" xmlns="http://www.w3.org/2000/svg"></svg>
+  <div id="words-layer"></div>
+</div>
+<script src="clicky-board-rough.js"></script>
+<script src="clicky-board-katex.min.js"></script>
+<script src="clicky-board.js"></script>
+</body>
+</html>
