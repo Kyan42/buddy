@@ -12,7 +12,7 @@ A voice assistant that lives in the macOS menu bar. Hold a shortcut, ask a quest
 <p align="center"><em>Buddy answering a spoken question about a figure on screen: it circles the parts it is talking about, then opens the whiteboard to draw the idea. A screen recording at double speed, without sound. The page is <a href="https://poloclub.github.io/transformer-explainer/">Transformer Explainer</a> by Polo Club.</em></p>
 
 <p align="center">
-  <img src="docs/buddy-faces.gif" width="800" alt="Buddy in five states: waiting with blinking eyes, listening with a ring of rays, thinking with a spinning ring, talking with happy eyes and a moving mouth, and pointing as a cursor arrow">
+  <img src="docs/buddy-faces.gif" width="800" alt="Buddy in five states: waiting with blinking eyes, listening with a ring of rays, thinking with a spinning ring, talking by bouncing with stretching eyes, and pointing as a cursor arrow">
 </p>
 <p align="center"><em>Buddy sits next to your cursor, and its face shows what it is doing. Rendered from the app's own drawing code.</em></p>
 

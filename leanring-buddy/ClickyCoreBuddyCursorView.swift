@@ -21,8 +21,9 @@ enum ClickyCoreBuddyExpression: Equatable {
     case listening
     /// Waiting on Claude. Eyes glance up and to the side while a HUD ring spins.
     case thinking
-    /// Talking: happy arc eyes and a little equalizer for a mouth, for as
-    /// long as the voice is playing.
+    /// Talking: no mouth. The whole orb bounces to a speech-like rhythm
+    /// (squash, stretch and a small hop) and the eyes stretch with it, for
+    /// as long as the voice is playing.
     case speaking
     /// Flying to, or holding at, something on screen: the orb becomes a navy
     /// cursor arrow with a cyan rim, tip toward the target.
@@ -59,25 +60,29 @@ struct ClickyCoreBuddyCursorView: View {
         TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timelineContext in
             let secondsNow = timelineContext.date.timeIntervalSinceReferenceDate
             let isPointing = expression == .pointing
+            let talkingBounceLevel = expression == .speaking ? speechLikeBounceLevel(secondsNow: secondsNow) : 0
             ZStack {
                 // The orb and the arrow are both always here and cross-fade
                 // with a quick scale, which reads as one shape morphing.
                 ZStack {
                     hudRing(secondsNow: secondsNow)
 
-                    Circle()
-                        .fill(DS.Colors.overlayCoreBuddyBody)
-                        .overlay(Circle().stroke(DS.Colors.overlayCoreBuddyCyan, lineWidth: 1.2))
-                        .frame(width: orbDiameter, height: orbDiameter)
+                    // The orb and its eyes are one body, so they bounce
+                    // together while talking: taller and a touch narrower on
+                    // each syllable, standing on the bottom edge, with a
+                    // small hop. At rest (level 0) nothing is changed.
+                    ZStack {
+                        Circle()
+                            .fill(DS.Colors.overlayCoreBuddyBody)
+                            .overlay(Circle().stroke(DS.Colors.overlayCoreBuddyCyan, lineWidth: 1.2 + 0.5 * talkingBounceLevel))
+                            .frame(width: orbDiameter, height: orbDiameter)
 
-                    eyes(secondsNow: secondsNow)
-                        .offset(eyeOffset)
-                        .animation(.easeOut(duration: 0.18), value: eyeOffset)
-
-                    if showsEqualizerMouth {
-                        equalizerMouth(secondsNow: secondsNow)
-                            .offset(x: eyeOffset.width * 0.5, y: 3.7 + eyeOffset.height * 0.3)
+                        eyes(secondsNow: secondsNow, talkingBounceLevel: talkingBounceLevel)
+                            .offset(eyeOffset)
+                            .animation(.easeOut(duration: 0.18), value: eyeOffset)
                     }
+                    .scaleEffect(x: 1 - 0.07 * talkingBounceLevel, y: 1 + 0.12 * talkingBounceLevel, anchor: .bottom)
+                    .offset(y: -1.1 * talkingBounceLevel)
                 }
                 .opacity(isPointing ? 0 : 1)
                 .scaleEffect(isPointing ? 0.4 : 1)
@@ -88,8 +93,9 @@ struct ClickyCoreBuddyCursorView: View {
             }
             .frame(width: hudRingDiameter + 6, height: hudRingDiameter + 6)
             // A cyan glow plus a soft dark shadow keep the orb visible on both
-            // dark and light apps. The glow brightens mid-flight.
-            .shadow(color: DS.Colors.overlayCoreBuddyCyan.opacity(0.35 + Double(flightScale - 1.0) * 1.5),
+            // dark and light apps. The glow brightens mid-flight, and pulses
+            // with each bounce while talking.
+            .shadow(color: DS.Colors.overlayCoreBuddyCyan.opacity(0.35 + Double(flightScale - 1.0) * 1.5 + 0.4 * Double(talkingBounceLevel)),
                     radius: 4 + (flightScale - 1.0) * 16)
             .shadow(color: Color.black.opacity(0.35), radius: 2, x: 0, y: 1)
         }
@@ -98,63 +104,69 @@ struct ClickyCoreBuddyCursorView: View {
 
     // MARK: - Eyes
 
-    private var showsEqualizerMouth: Bool {
-        switch expression {
-        case .speaking: return true
-        case .idle, .listening, .thinking, .pointing: return false
-        }
-    }
-
     private var eyeOffset: CGSize {
         // Thinking glances up and to the right, like someone recalling something.
         let lookDirection = expression == .thinking ? CGVector(dx: 0.65, dy: -0.65) : gazeDirection
-        // When talking, the eyes sit a little higher to leave room for the mouth.
-        let raiseForMouth: CGFloat = showsEqualizerMouth ? -1.2 : 0
         let lookDirectionLength = sqrt(lookDirection.dx * lookDirection.dx + lookDirection.dy * lookDirection.dy)
-        guard lookDirectionLength > 0.001 else { return CGSize(width: 0, height: raiseForMouth) }
+        guard lookDirectionLength > 0.001 else { return .zero }
         // Longer than 1 is clamped, so the eyes never leave the orb.
         let eyeTravelScale = min(lookDirectionLength, 1) / lookDirectionLength * maximumEyeTravel
         return CGSize(
             width: lookDirection.dx * eyeTravelScale,
-            height: lookDirection.dy * eyeTravelScale + raiseForMouth
+            height: lookDirection.dy * eyeTravelScale
         )
     }
 
-    @ViewBuilder
-    private func eyes(secondsNow: TimeInterval) -> some View {
-        if expression == .speaking {
-            // Happy arc eyes (upside-down U) while chatting.
-            HStack(spacing: eyeSpacingFromCenter * 2 - 3) {
-                ClickyCoreBuddyHappyEyeArc()
-                    .stroke(DS.Colors.overlayCoreBuddyCyan, style: StrokeStyle(lineWidth: 1.4, lineCap: .round))
-                    .frame(width: 3, height: 2.4)
-                ClickyCoreBuddyHappyEyeArc()
-                    .stroke(DS.Colors.overlayCoreBuddyCyan, style: StrokeStyle(lineWidth: 1.4, lineCap: .round))
-                    .frame(width: 3, height: 2.4)
-            }
-        } else {
-            HStack(spacing: eyeSpacingFromCenter * 2 - eyeWidth) {
-                Capsule()
-                    .fill(DS.Colors.overlayCoreBuddyCyan)
-                    .frame(width: eyeWidth, height: eyeHeight)
-                Capsule()
-                    .fill(DS.Colors.overlayCoreBuddyCyan)
-                    .frame(width: eyeWidth, height: eyeHeight)
-            }
-            .scaleEffect(x: 1, y: blinkScale(secondsNow: secondsNow))
+    private func eyes(secondsNow: TimeInterval, talkingBounceLevel: CGFloat) -> some View {
+        let eyeHeight = eyeHeight(talkingBounceLevel: talkingBounceLevel)
+        return HStack(spacing: eyeSpacingFromCenter * 2 - eyeWidth) {
+            Capsule()
+                .fill(DS.Colors.overlayCoreBuddyCyan)
+                .frame(width: eyeWidth, height: eyeHeight)
+            Capsule()
+                .fill(DS.Colors.overlayCoreBuddyCyan)
+                .frame(width: eyeWidth, height: eyeHeight)
         }
+        .scaleEffect(x: 1, y: blinkScale(secondsNow: secondsNow))
     }
 
-    private var eyeHeight: CGFloat {
+    private func eyeHeight(talkingBounceLevel: CGFloat) -> CGFloat {
         switch expression {
         case .listening:
             // Wide open, and a touch wider when you're louder.
             return 7 + easedVoiceLevel * 1.5
         case .thinking:
             return 5
-        case .idle, .speaking, .pointing:
+        case .speaking:
+            // The eyes stretch with each bounce, so the face moves even
+            // though it has no mouth.
+            return 5.2 + 1.9 * talkingBounceLevel
+        case .idle, .pointing:
             return 6
         }
+    }
+
+    // MARK: - Talking bounce
+
+    /// While talking, how far into a bounce the orb is: 0 is at rest, 1 is
+    /// fully stretched. It runs on the clock, not on the real voice: three
+    /// syllables a second, some stressed more than others, with a short
+    /// breath every few seconds so it never looks like a metronome.
+    private func speechLikeBounceLevel(secondsNow: TimeInterval) -> CGFloat {
+        let syllablesPerSecond = 3.0
+        let syllableBounce = abs(sin(secondsNow * .pi * syllablesPerSecond))
+        // Stress rises and falls once a second, so no two neighbouring
+        // syllables bounce to the same height.
+        let syllableStress = 0.45 + 0.55 * pow(sin(secondsNow * .pi + 0.6), 2)
+        // A breath: the bounce nearly stops for the last half second of each
+        // phrase. 4.1 seconds does not line up with the stress, so the
+        // pattern takes a long time to repeat.
+        let secondsPerPhrase = 4.1
+        let breathSeconds = 0.48
+        let secondsIntoPhrase = secondsNow.truncatingRemainder(dividingBy: secondsPerPhrase)
+        let isTakingABreath = secondsIntoPhrase > secondsPerPhrase - breathSeconds
+        let breathQuietening = isTakingABreath ? 0.06 : 1.0
+        return CGFloat(syllableBounce * syllableStress * breathQuietening)
     }
 
     /// A quick blink every few seconds, with an occasional double blink, so the
@@ -177,21 +189,6 @@ struct ClickyCoreBuddyCursorView: View {
             }
         }
         return 1
-    }
-
-    // MARK: - Mouth
-
-    private func equalizerMouth(secondsNow: TimeInterval) -> some View {
-        HStack(spacing: 1.2) {
-            ForEach(0..<3, id: \.self) { barIndex in
-                let barPhase = secondsNow * 11 + Double(barIndex) * 1.9
-                let barHeight = 1.2 + 2.0 * CGFloat((sin(barPhase) + 1) / 2)
-                Capsule()
-                    .fill(DS.Colors.overlayCoreBuddyCyan)
-                    .frame(width: 1.2, height: barHeight)
-            }
-        }
-        .frame(height: 3.4)
     }
 
     // MARK: - Listening halo
@@ -264,19 +261,6 @@ struct ClickyCoreBuddyCursorView: View {
         case .idle, .speaking, .pointing:
             EmptyView()
         }
-    }
-}
-
-/// An upside-down U: the "smiling eyes" Clicky makes while it talks.
-private struct ClickyCoreBuddyHappyEyeArc: Shape {
-    func path(in rect: CGRect) -> Path {
-        var path = Path()
-        path.move(to: CGPoint(x: rect.minX, y: rect.maxY))
-        path.addQuadCurve(
-            to: CGPoint(x: rect.maxX, y: rect.maxY),
-            control: CGPoint(x: rect.midX, y: rect.minY - rect.height * 0.9)
-        )
-        return path
     }
 }
 
