@@ -1,6 +1,20 @@
-# Buddy
+<p align="center">
+  <img src="docs/buddy.png" width="140" alt="Buddy: a dark navy orb with a glowing cyan rim and two cyan eyes">
+</p>
+
+<h1 align="center">Buddy</h1>
 
 A voice assistant that lives in the macOS menu bar. Hold a shortcut, ask a question out loud, and Buddy looks at your screen, answers in a natural voice, and draws on the screen or on a whiteboard while it talks.
+
+<p align="center">
+  <img src="docs/buddy-demo.gif" width="800" alt="Buddy circling the Query, Key and Value parts of a figure on a web page, then opening a whiteboard and drawing a three by three attention grid with the upper triangle shaded">
+</p>
+<p align="center"><em>Buddy answering a spoken question about a figure on screen: it circles the parts it is talking about, then opens the whiteboard to draw the idea. A screen recording at double speed, without sound. The page is <a href="https://poloclub.github.io/transformer-explainer/">Transformer Explainer</a> by Polo Club.</em></p>
+
+<p align="center">
+  <img src="docs/buddy-faces.gif" width="800" alt="Buddy in five states: waiting with blinking eyes, listening with a ring of rays, thinking with a spinning ring, talking with happy eyes and a moving mouth, and pointing as a cursor arrow">
+</p>
+<p align="center"><em>Buddy sits next to your cursor, and its face shows what it is doing. Rendered from the app's own drawing code.</em></p>
 
 Buddy runs Claude through the [Claude Code](https://docs.anthropic.com/en/docs/claude-code) CLI on your own Claude subscription. Speech recognition and the voice both run on your Mac. There are no API keys to set up, no server, and no analytics.
 
@@ -15,6 +29,17 @@ This is a personal project, based on [Clicky](https://github.com/farzaa/clicky) 
 - **Teaches on a whiteboard.** When a picture helps, Buddy opens a floating board and draws diagrams, plots and equations in a hand-drawn style as it explains.
 - **Reads your Claude Code sessions.** If your question is about work you did in Claude Code, Buddy can read that session for context.
 - **Remembers.** Buddy keeps a short plain-text notes file about you and how you like it to behave. You can open and edit it at any time.
+
+<p align="center">
+  <img src="docs/board-replay.gif" width="800" alt="Buddy's whiteboard drawing an image grid, one highlighted patch, an arrow labelled linear layer to one token, and a box labelled vision transformer">
+</p>
+<p align="center"><em>The whiteboard answering a spoken question about how a vision model turns an image into tokens. This is a replay of the drawing steps from a real answer, without the voice and with the pauses shortened.</em></p>
+
+<p align="center">
+  <img src="docs/board-price.png" width="49%" alt="A whiteboard showing buyers offering 98 dollars and sellers asking 102 dollars, meeting at a price of 100 dollars">
+  <img src="docs/board-patch-to-token.png" width="49%" alt="A whiteboard showing one image patch flattened into 768 numbers, multiplied by learned weights, and added to a position vector">
+</p>
+<p align="center"><em>Finished boards from two other questions: how a share price gets set, and what happens to one image patch.</em></p>
 
 ## How it works
 
@@ -105,6 +130,7 @@ leanring-buddy/            Swift source for the app
 tts-server/                Local voice server (Pocket TTS and Parakeet through MLX)
 tools/                     Standalone tests and measurement scripts
 reports/                   Design research and write-ups
+docs/                      Images used in this README
 worker/                    The original project's Cloudflare Worker (not used by Buddy)
 AGENTS.md                  Full architecture notes, also read by coding agents
 ```
