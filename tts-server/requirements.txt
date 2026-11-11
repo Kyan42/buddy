@@ -1,0 +1,7 @@
+# Clicky's local voice server (Pocket TTS on Apple Silicon via MLX).
+# Setup (from the repo root):
+#   /opt/homebrew/bin/python3.12 -m venv tts-server/.venv
+#   tts-server/.venv/bin/pip install -r tts-server/requirements.txt
+#   tts-server/.venv/bin/python -I -c "from huggingface_hub import snapshot_download; snapshot_download('mlx-community/pocket-tts')"
+mlx-audio==0.6.4
+soundfile

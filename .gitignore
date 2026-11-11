@@ -6,3 +6,10 @@ build/
 releases/
 .claude/
 coding-plans/
+
+# Local TTS server environment and generated voice samples
+tts-server/.venv/
+voice-samples/
+
+# Per-user Xcode state
+xcuserdata/
