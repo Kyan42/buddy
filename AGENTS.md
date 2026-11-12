@@ -5,7 +5,7 @@
 
 ## Overview
 
-macOS menu bar companion app. Lives entirely in the macOS status bar (no dock icon, no main window). Clicking the menu bar icon opens a custom floating panel with companion voice controls. Uses push-to-talk (ctrl+option) to capture voice input, transcribes it on-device with Apple Speech, and sends the transcript + a screenshot of the user's screen to a warm Claude Code CLI process running on the user's own Claude subscription (`claude auth login`). The reply is spoken sentence-by-sentence with Apple's on-device voices while it streams. Claude calls a local `point` tool mid-reply to make the blue cursor fly to UI elements on any connected monitor.
+macOS menu bar companion app. Lives entirely in the macOS status bar (no dock icon, no main window). Clicking the menu bar icon opens a custom floating panel with companion voice controls. Uses push-to-talk (ctrl+option) to capture voice input, transcribes it on-device (Parakeet through a local voice server, with Apple Speech as the live preview and fallback), and sends the transcript + a screenshot of each display to a warm Claude Code CLI process running on the user's own Claude subscription (`claude auth login`). The reply is spoken sentence-by-sentence while it streams, with a local neural voice (Pocket TTS, with Apple's on-device voices as fallback). Claude writes inline tags in its reply that make the cursor fly to things and draw on the screen, draw on a floating whiteboard, read one of the user's Claude Code sessions, or save a memory note.
 
 The app shows and calls itself **Buddy** (menu panel, permission prompts, welcome message, board title, and the name in the voice prompts). Code names, the built `Clicky.app`, the bundle identifier and the log folder keep "Clicky", and the `Buddy*` dictation files are unrelated upstream names.
 
@@ -31,7 +31,7 @@ This is a personal fork: no API keys, no Cloudflare Worker, analytics disabled, 
 
 ### API Proxy (Cloudflare Worker) — legacy, unused by the voice pipeline
 
-Upstream routed all API calls through this Worker. This fork no longer uses it for Claude or TTS. All requests go through a Cloudflare Worker (`worker/src/index.ts`) that holds the real API keys as secrets.
+Upstream routed all API calls through a Cloudflare Worker (`worker/src/index.ts`) that holds the real API keys as secrets. This fork does not use it for Claude or TTS; only the optional AssemblyAI and OpenAI transcription providers would still need it.
 
 | Route | Upstream | Purpose |
 |-------|----------|---------|
@@ -52,7 +52,7 @@ Worker vars: `ELEVENLABS_VOICE_ID`
 
 **Shared URLSession for AssemblyAI**: A single long-lived `URLSession` is shared across all AssemblyAI streaming sessions (owned by the provider, not the session). Creating and invalidating a URLSession per session corrupts the OS connection pool and causes "Socket is not connected" errors after a few rapid reconnections.
 
-**Transient Cursor Mode**: When "Show Clicky" is off, pressing the hotkey fades in the cursor overlay for the duration of the interaction (recording → response → TTS → optional pointing), then fades it out automatically after 1 second of inactivity.
+**Transient Cursor Mode**: When "Show Buddy" is off, pressing the hotkey fades in the cursor overlay for the duration of the interaction (recording → response → TTS → optional pointing), then fades it out automatically after 1 second of inactivity.
 
 ## Local Voice Server (tts-server/)
 
@@ -79,23 +79,23 @@ Quick look at the latest interactions: `tail -n 40 ~/Library/Logs/Clicky/events-
 | File | Lines | Purpose |
 |------|-------|---------|
 | `leanring_buddyApp.swift` | ~89 | Menu bar app entry point. Uses `@NSApplicationDelegateAdaptor` with `CompanionAppDelegate` which creates `MenuBarPanelManager` and starts `CompanionManager`. No main window — the app lives entirely in the status bar. |
-| `CompanionManager.swift` | ~2390 | Central state machine. Owns dictation, shortcut monitoring, screen capture, Claude API, ElevenLabs TTS, and overlay management. Tracks voice state (idle/listening/processing/responding), conversation history, model selection, and cursor visibility. Coordinates the full push-to-talk → screenshot → Claude → TTS → pointing pipeline. |
+| `CompanionManager.swift` | ~2390 | Central state machine. Owns dictation, shortcut monitoring, screen capture, the Claude CLI voice session, the sentence speaker, and overlay management. Tracks voice state (idle/listening/processing/responding), conversation history, model selection, and cursor visibility. Coordinates the full push-to-talk → screenshot → Claude → speech pipeline, and acts on the inline tags in a reply (pen marks, board drawing, session reads, memory writes). Also builds the voice system prompt. |
 | `MenuBarPanelManager.swift` | ~243 | NSStatusItem + custom NSPanel lifecycle. Creates the menu bar icon, manages the floating companion panel (show/hide/position), installs click-outside-to-dismiss monitor. |
-| `CompanionPanelView.swift` | ~900 | SwiftUI panel content for the menu bar dropdown. Shows companion status, push-to-talk instructions, model picker (Sonnet/Opus), permissions UI, DM feedback button, and quit button. Dark aesthetic using `DS` design system. |
-| `OverlayWindow.swift` | ~881 | Full-screen transparent overlay hosting the Core cursor (`ClickyCoreBuddyCursorView`) and its speech bubbles. Handles cursor animation, element pointing with bezier arcs, multi-monitor coordinate mapping, and fade-out transitions. |
+| `CompanionPanelView.swift` | ~900 | SwiftUI panel content for the menu bar dropdown. Shows companion status, push-to-talk instructions, permissions UI, pickers for model (Sonnet/Opus), pace and effort, the memory notes row, a feedback button, and quit button. Dark aesthetic using `DS` design system. |
+| `OverlayWindow.swift` | ~950 | Full-screen transparent overlay hosting the Core cursor (`ClickyCoreBuddyCursorView`) and its speech bubbles. Handles cursor animation, element pointing with bezier arcs, multi-monitor coordinate mapping, and fade-out transitions. |
 | `ClickyCoreBuddyCursorView.swift` | ~280 | Clicky's cursor, "Core": a navy orb with a cyan rim and cyan pill eyes. One view for every state with expressions (idle blinks, listening ring that swells with your voice, thinking HUD ring, no mouth while speaking: the orb bounces to a speech-like rhythm on a timer and the eyes stretch with it, eyes that look along the flight path and at the target). Colors `DS.Colors.overlayCoreBuddyBody` / `overlayCoreBuddyCyan`. |
 | `CompanionResponseOverlay.swift` | ~217 | SwiftUI view for the response text bubble and waveform displayed next to the cursor in the overlay. |
 | `CompanionScreenCaptureUtility.swift` | ~132 | Multi-monitor screenshot capture using ScreenCaptureKit. Returns labeled image data for each connected display. |
 | `BuddyDictationManager.swift` | ~866 | Push-to-talk voice pipeline. Handles microphone capture via `AVAudioEngine`, provider-aware permission checks, keyboard/button dictation sessions, transcript finalization, shortcut parsing, contextual keyterms, and live audio-level reporting for waveform feedback. |
-| `BuddyTranscriptionProvider.swift` | ~100 | Protocol surface and provider factory for voice transcription backends. Resolves provider based on `VoiceTranscriptionProvider` in Info.plist — AssemblyAI, OpenAI, or Apple Speech. |
+| `BuddyTranscriptionProvider.swift` | ~100 | Protocol surface and provider factory for voice transcription backends. Resolves provider based on `VoiceTranscriptionProvider` in Info.plist — Parakeet (the default), Apple Speech, AssemblyAI, or OpenAI. |
 | `AssemblyAIStreamingTranscriptionProvider.swift` | ~478 | Streaming transcription provider. Fetches temp tokens from the Cloudflare Worker, opens an AssemblyAI v3 websocket, streams PCM16 audio, tracks turn-based transcripts, and delivers finalized text on key-up. Shares a single URLSession across all sessions. |
 | `OpenAIAudioTranscriptionProvider.swift` | ~317 | Upload-based transcription provider. Buffers push-to-talk audio locally, uploads as WAV on release, returns finalized transcript. |
 | `ParakeetTranscriptionProvider.swift` | ~300 | Push-to-talk transcription with Parakeet through the local voice server, with an Apple Speech session running alongside for live text and fallback. `ClickyLastTranscriptReport` tells the log which engine answered. |
 | `AppleSpeechTranscriptionProvider.swift` | ~147 | Local fallback transcription provider backed by Apple's Speech framework. |
 | `BuddyAudioConversionSupport.swift` | ~108 | Audio conversion helpers. Converts live mic buffers to PCM16 mono audio and builds WAV payloads for upload-based providers. |
 | `GlobalPushToTalkShortcutMonitor.swift` | ~132 | System-wide push-to-talk monitor. Owns the listen-only `CGEvent` tap and publishes press/release transitions. |
-| `ClaudeCLIVoiceSession.swift` | ~450 | Warm Claude Code CLI process (stream-json). Clean env so it uses the user's `claude auth login`, drains stderr, interrupts turns via `control_request`, joins text across tool calls, maps CLI errors to spoken reasons, `claude auth status` check. |
-| `ClickyLocalToolServer.swift` | ~270 | Minimal MCP server over HTTP (Network.framework) on loopback with a secret path. Exposes the `point` tool; answers immediately and forwards calls to the main thread. |
+| `ClaudeCLIVoiceSession.swift` | ~530 | Warm Claude Code CLI process (stream-json). Clean env so it uses the user's `claude auth login`, drains stderr, interrupts turns via `control_request`, joins text across tool calls, maps CLI errors to spoken reasons, `claude auth status` check. |
+| `ClickyLocalToolServer.swift` | ~270 | Minimal MCP server over HTTP (Network.framework) on loopback with a secret path. Exposes the `point` tool; answers immediately and forwards calls to the main thread. Not given to the voice session today (pointing uses inline tags); kept for future tools. |
 | `StreamingSentenceSpeaker.swift` | ~920 | Speaks streamed text sentence by sentence: Pocket TTS audio streamed from the local voice server into AVAudioEngine (odd-byte-safe PCM16 decoding, engine restart on device changes, barge-in cancels the in-flight request), with Apple AVSpeechSynthesizer as per-reply fallback. |
 | `LocalVoiceServer.swift` | ~270 | Launches/supervises `tts-server/pocket_tts_server.py` (`LocalVoiceServer.shared`, used for speaking and transcribing): clean env + secret token, reads the JSON ready line (port, sample rate), drains stderr, logs exits, rate-limited restarts. |
 | `ClickyInlineMarkParser.swift` | ~470 | Streaming parser that splits Claude's reply into speakable text, pen/board marks, `<read_session/>` requests and memory writes (`<remember>`, `<forget>`); only `<` + a known mark name starts a tag; `<draw>` bodies are read until `</draw>`; drops malformed/overlong tags. Tested by `tools/inline_mark_parser_split_test.swift`. |
@@ -105,15 +105,15 @@ Quick look at the latest interactions: `tail -n 40 ~/Library/Logs/Clicky/events-
 | `ClickyBoard/clicky-board.js` | ~920 | The board's drawing API (text, math, shapes, polygon sides, angles, braces, connect, highlight, tables, axes/plot/shade) and the stroke-reveal timing. Lives next to `clicky-board.html`/`.css`, rough.js, KaTeX and its fonts, and `ClickyBoard-THIRD-PARTY-LICENSES.txt`. |
 | `ClickyScreenMarksOverlay.swift` | ~300 | Mark/flight models and the SwiftUI pen-stroke views (seeded hand-drawn loop, underline, highlighter sweep, arrow). |
 | `ClickyLocalTelemetry.swift` | ~170 | Local-only JSONL event log + per-interaction screenshots in `~/Library/Logs/Clicky/`, with retention cleanup. |
-| `ClaudeAPI.swift` | ~291 | Claude vision API client with streaming (SSE) and non-streaming modes. TLS warmup optimization, image MIME detection, conversation history support. |
-| `OpenAIAPI.swift` | ~142 | OpenAI GPT vision API client. |
-| `ElevenLabsTTSClient.swift` | ~81 | ElevenLabs TTS client. Sends text to the Worker proxy, plays back audio via `AVAudioPlayer`. Exposes `isPlaying` for transient cursor scheduling. |
-| `ElementLocationDetector.swift` | ~335 | Detects UI element locations in screenshots for cursor pointing. |
+| `ClaudeAPI.swift` | ~291 | Kept from upstream, not used: Claude vision API client with streaming (SSE) and non-streaming modes. Buddy talks to Claude through `ClaudeCLIVoiceSession` instead. |
+| `OpenAIAPI.swift` | ~142 | Kept from upstream, not used: OpenAI GPT vision API client. |
+| `ElevenLabsTTSClient.swift` | ~81 | Kept from upstream, not used: ElevenLabs TTS client that sends text to the Worker proxy. Buddy speaks through `StreamingSentenceSpeaker` instead. |
+| `ElementLocationDetector.swift` | ~335 | Kept from upstream, not used: detects UI element locations in screenshots for cursor pointing. Claude gives screenshot coordinates directly in its tags now. |
 | `DesignSystem.swift` | ~880 | Design system tokens — colors, corner radii, shared styles. All UI references `DS.Colors`, `DS.CornerRadius`, etc. |
-| `ClickyAnalytics.swift` | ~121 | PostHog analytics integration for usage tracking. |
+| `ClickyAnalytics.swift` | ~47 | Empty stand-ins for upstream's analytics calls, so call sites still compile. Nothing is sent anywhere. |
 | `WindowPositionManager.swift` | ~262 | Window placement logic, Screen Recording permission flow, and accessibility permission helpers. |
 | `AppBundleConfiguration.swift` | ~28 | Runtime configuration reader for keys stored in the app bundle Info.plist. |
-| `worker/src/index.ts` | ~142 | Cloudflare Worker proxy. Three routes: `/chat` (Claude), `/tts` (ElevenLabs), `/transcribe-token` (AssemblyAI temp token). |
+| `worker/src/index.ts` | ~142 | Legacy, not needed to run Buddy: Cloudflare Worker proxy. Three routes: `/chat` (Claude), `/tts` (ElevenLabs), `/transcribe-token` (AssemblyAI temp token). |
 
 ## Build & Run
 
@@ -129,7 +129,9 @@ open leanring-buddy.xcodeproj
 
 **Do NOT run `xcodebuild` from the terminal** — it invalidates TCC (Transparency, Consent, and Control) permissions and the app will need to re-request screen recording, accessibility, etc.
 
-## Cloudflare Worker
+## Cloudflare Worker (legacy, not needed to run Buddy)
+
+Only the optional AssemblyAI and OpenAI transcription providers would use it.
 
 ```bash
 cd worker
