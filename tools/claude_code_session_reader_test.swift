@@ -10,15 +10,30 @@ import Foundation
 let sessionReader = ClickyClaudeCodeSessionReader()
 let digestOutputFolderPath: String? = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : nil
 
-let firstListingStartDate = Date()
+// The list never reads a session file, so before anything has been read it
+// is instant and its sessions have no titles yet.
+let listBeforeReadingStartDate = Date()
+let sessionListingsBeforeReading = await sessionReader.listRecentSessions()
+let listBeforeReadingMilliseconds = Int(Date().timeIntervalSince(listBeforeReadingStartDate) * 1000)
+
+// The first read covers every recent session file from the start.
+let firstRefreshStartDate = Date()
+await sessionReader.refreshRecentSessions()
+let firstRefreshMilliseconds = Int(Date().timeIntervalSince(firstRefreshStartDate) * 1000)
+
+// A second read finds nothing new, or only the lines added since.
+let secondRefreshStartDate = Date()
+await sessionReader.refreshRecentSessions()
+let secondRefreshMilliseconds = Int(Date().timeIntervalSince(secondRefreshStartDate) * 1000)
+
+let listAfterReadingStartDate = Date()
 let sessionListings = await sessionReader.listRecentSessions()
-let firstListingMilliseconds = Int(Date().timeIntervalSince(firstListingStartDate) * 1000)
+let listAfterReadingMilliseconds = Int(Date().timeIntervalSince(listAfterReadingStartDate) * 1000)
 
-let secondListingStartDate = Date()
-_ = await sessionReader.listRecentSessions()
-let secondListingMilliseconds = Int(Date().timeIntervalSince(secondListingStartDate) * 1000)
-
-print("listed \(sessionListings.count) sessions: first time \(firstListingMilliseconds) ms, again (cached) \(secondListingMilliseconds) ms")
+let untitledCountBeforeReading = sessionListingsBeforeReading.filter { $0.title == "(untitled)" }.count
+print("list before anything was read: \(listBeforeReadingMilliseconds) ms, \(sessionListingsBeforeReading.count) sessions, \(untitledCountBeforeReading) without a title yet")
+print("first read of the recent session files: \(firstRefreshMilliseconds) ms; read again: \(secondRefreshMilliseconds) ms")
+print("list after reading: \(listAfterReadingMilliseconds) ms, \(sessionListings.count) sessions")
 let sessionListNote = ClickyClaudeCodeSessionReader.sessionListNoteForClaude(sessionListings: sessionListings) ?? ""
 print("list note: \(sessionListNote.count) characters, \(sessionListNote.split(separator: "\n").count) lines")
 if let digestOutputFolderPath {

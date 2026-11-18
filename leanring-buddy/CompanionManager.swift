@@ -68,9 +68,6 @@ final class CompanionManager: ObservableObject {
 
     /// Reads the user's Claude Code sessions from disk so Claude can ask for one.
     private let claudeCodeSessionReader = ClickyClaudeCodeSessionReader()
-    /// Listing starts when the hotkey goes down (and once at launch), so the
-    /// list is ready by the time the user finishes talking.
-    private var claudeCodeSessionListingTask: Task<[ClickyClaudeCodeSessionListing], Never>?
     /// The sessions listed in the question being answered. The id in Claude's
     /// <read_session id="..."/> is matched against exactly this list.
     private var claudeCodeSessionListingsSentWithCurrentQuestion: [ClickyClaudeCodeSessionListing] = []
@@ -394,7 +391,7 @@ final class CompanionManager: ObservableObject {
         prewarmClaudeVoiceSessionInBackground()
         // The first listing reads every recent session file (about a second), so
         // do it now and not during the first question.
-        startListingClaudeCodeSessions()
+        startRefreshingClaudeCodeSessions()
 
         // If the user already completed onboarding AND all permissions are
         // still granted, show the cursor overlay immediately. If permissions
@@ -659,7 +656,7 @@ final class CompanionManager: ObservableObject {
 
             // The user talks for a few seconds, which is plenty of time to
             // refresh the session list for this question.
-            startListingClaudeCodeSessions()
+            startRefreshingClaudeCodeSessions()
 
             // Barge-in: stop the previous reply's speech and streaming at once.
             // Changing the turn identifier makes any late events from it no-ops.
@@ -898,7 +895,9 @@ final class CompanionManager: ObservableObject {
                 return
             }
 
+            let sessionListingStartDate = Date()
             let claudeCodeSessionListings = await claudeCodeSessionListingsForThisQuestion()
+            let millisecondsToListClaudeCodeSessions = Int(Date().timeIntervalSince(sessionListingStartDate) * 1000)
 
             guard !Task.isCancelled, currentVoiceTurnIdentifier == voiceTurnIdentifier else { return }
             currentReplyMarkParser = ClickyInlineMarkParser()
@@ -927,6 +926,9 @@ final class CompanionManager: ObservableObject {
                     "model": voiceSession.configuration.modelIdentifier,
                     "turnsAlreadyOnThisCLIProcess": voiceSession.completedTurnCount,
                     "claudeCodeSessionsListed": claudeCodeSessionListings.count,
+                    // Should stay in the low milliseconds. This step once
+                    // held a question up for 38 seconds.
+                    "msToListClaudeCodeSessions": millisecondsToListClaudeCodeSessions,
                 ]
             )
 
@@ -1056,18 +1058,20 @@ final class CompanionManager: ObservableObject {
 
     // MARK: - Reading Claude Code Sessions
 
-    /// Starts refreshing the list of Claude Code sessions in the background.
-    private func startListingClaudeCodeSessions() {
-        claudeCodeSessionListingTask = Task { [claudeCodeSessionReader] in
-            await claudeCodeSessionReader.listRecentSessions()
+    /// Starts reading what is new in the user's recent Claude Code sessions,
+    /// in the background (when the hotkey goes down, and once at launch).
+    /// Nothing waits for it: waiting for these files to be read once held a
+    /// question up for 38 seconds.
+    private func startRefreshingClaudeCodeSessions() {
+        Task { [claudeCodeSessionReader] in
+            await claudeCodeSessionReader.refreshRecentSessions()
         }
     }
 
+    /// The list sent with a question. Takes milliseconds: it uses whatever
+    /// the background refresh has read by now.
     private func claudeCodeSessionListingsForThisQuestion() async -> [ClickyClaudeCodeSessionListing] {
-        if claudeCodeSessionListingTask == nil {
-            startListingClaudeCodeSessions()
-        }
-        return await claudeCodeSessionListingTask?.value ?? []
+        return await claudeCodeSessionReader.listRecentSessions()
     }
 
     /// Claude wrote <read_session id="..."/>: start reading that session right

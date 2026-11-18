@@ -15,6 +15,17 @@
 //       and injected reminders left out. A 30 MB session file holds roughly
 //       20-60 KB of this.
 //
+//  Session files grow to 100 MB and more. Reading one from the start takes
+//  under a second, but that has been 30 times slower before (see the note
+//  where the folder name is read), and the files keep growing. Two rules keep
+//  any slow read away from the user:
+//
+//    - The list never reads a session file. It is built from the folder
+//      listing plus whatever has already been read (title and folder name),
+//      so a question never waits for it.
+//    - Session files are only ever added to, so a file that has grown is read
+//      from where the last read stopped, not from the start.
+//
 //  Where the data lives (all local, read-only here):
 //
 //    ~/.claude/projects/<folder>/<session-id>.jsonl   one JSON object per line
@@ -54,40 +65,83 @@ nonisolated final class ClickyClaudeCodeSessionReader: @unchecked Sendable {
     /// keeping the warm CLI session's context from filling up, not about speed.
     static let maximumDigestCharacters = 40_000
 
-    private static let claudeCodeFolderURL = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent(".claude", isDirectory: true)
-    private static let projectsFolderURL = claudeCodeFolderURL.appendingPathComponent("projects", isDirectory: true)
-    private static let runningSessionsFolderURL = claudeCodeFolderURL.appendingPathComponent("sessions", isDirectory: true)
+    private let projectsFolderURL: URL
+    private let runningSessionsFolderURL: URL
 
-    /// Session files are large, so all reading happens on this queue, never on
-    /// the main thread.
-    private let sessionReadingQueue = DispatchQueue(label: "clicky.claude-code-session-reader", qos: .userInitiated)
+    /// The app reads ~/.claude. Tests pass a temporary folder laid out the same way.
+    init(claudeCodeFolderURL: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude", isDirectory: true)) {
+        projectsFolderURL = claudeCodeFolderURL.appendingPathComponent("projects", isDirectory: true)
+        runningSessionsFolderURL = claudeCodeFolderURL.appendingPathComponent("sessions", isDirectory: true)
+    }
 
-    /// What one session file held the last time it was read. Only touched on
-    /// sessionReadingQueue.
+    /// Three kinds of work, each on its own queue so none waits for another.
+    /// Nothing here runs on the main thread.
+    /// The list is quick (it never reads a session file) and must stay quick
+    /// while a long read is running, so it has a queue to itself.
+    private let sessionListingQueue = DispatchQueue(label: "clicky.claude-code-session-listing", qos: .userInitiated)
+    /// Background reading of what is new in the recent session files. The
+    /// first read after launch covers every recent file from the start.
+    private let sessionRefreshQueue = DispatchQueue(label: "clicky.claude-code-session-refresh", qos: .utility)
+    /// Reading one session because Claude asked for it. Kept apart from the
+    /// background refresh so the user is not left waiting behind it.
+    private let sessionDigestQueue = DispatchQueue(label: "clicky.claude-code-session-digest", qos: .userInitiated)
+
+    /// What has been gathered from a session file's lines so far.
+    private struct SessionFileContent {
+        var title: String?
+        var folderName: String?
+        /// The summary Claude Code wrote the last time the session's context filled up.
+        var latestSummaryText = ""
+        /// The typed conversation after that summary, oldest first.
+        var messagesAfterLatestSummary: [(speakerName: String, messageText: String)] = []
+    }
+
+    /// What one session file held the last time it was read, and how far that
+    /// read got, so the next read can continue from there.
     private struct ParsedSessionFile {
         let fileModificationDate: Date
         let fileByteCount: Int
-        let title: String?
-        let folderName: String?
-        /// The summary Claude Code wrote the last time the session's context filled up.
-        let latestSummaryText: String
-        /// The typed conversation after that summary, oldest first.
-        let messagesAfterLatestSummary: [(speakerName: String, messageText: String)]
+        /// The position just past the last complete line that was read.
+        let byteCountReadSoFar: Int
+        /// The last few bytes before that position. If they are no longer
+        /// there, the file was rewritten and must be read from the start.
+        let bytesJustBeforeReadPosition: Data
+        let content: SessionFileContent
     }
 
-    /// A session file is only parsed again when its size or modification date
-    /// changed, so closed sessions cost nothing after the first question.
+    /// A session file is not read again while its size and modification date
+    /// are unchanged, and when it has grown only the new part is read.
+    /// The background refresh, a digest and the list all use this from
+    /// different queues, so every access holds parsedSessionFilesLock.
     private var parsedSessionFilesByPath: [String: ParsedSessionFile] = [:]
+    private let parsedSessionFilesLock = NSLock()
 
     // MARK: - Public (safe to call from the main thread)
 
     /// The most recently active sessions, newest first. Empty when there are
     /// none or the folder can't be read.
+    ///
+    /// Returns in milliseconds whatever else is going on: which sessions
+    /// exist, when each was last active and whether it is open come from the
+    /// folder listing, and the title and folder name are whatever
+    /// refreshRecentSessions has read so far. A session that has not been read
+    /// yet shows as "(untitled)" until the refresh gets to it.
     func listRecentSessions() async -> [ClickyClaudeCodeSessionListing] {
         return await withCheckedContinuation { continuation in
-            sessionReadingQueue.async {
-                continuation.resume(returning: self.listRecentSessionsOnReadingQueue())
+            sessionListingQueue.async {
+                continuation.resume(returning: self.listRecentSessionsFromWhatHasBeenRead())
+            }
+        }
+    }
+
+    /// Reads what is new in the most recent session files, so the list has
+    /// their current titles. The app starts this and does not wait for it;
+    /// tests wait for it.
+    func refreshRecentSessions() async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            sessionRefreshQueue.async {
+                self.refreshRecentSessionsOnRefreshQueue()
+                continuation.resume()
             }
         }
     }
@@ -95,8 +149,8 @@ nonisolated final class ClickyClaudeCodeSessionReader: @unchecked Sendable {
     /// The digest of one session from the list.
     func buildDigest(ofSession sessionListing: ClickyClaudeCodeSessionListing) async -> ClickyClaudeCodeSessionDigestResult {
         return await withCheckedContinuation { continuation in
-            sessionReadingQueue.async {
-                continuation.resume(returning: self.buildDigestOnReadingQueue(ofSession: sessionListing))
+            sessionDigestQueue.async {
+                continuation.resume(returning: self.buildDigestOnDigestQueue(ofSession: sessionListing))
             }
         }
     }
@@ -128,12 +182,14 @@ nonisolated final class ClickyClaudeCodeSessionReader: @unchecked Sendable {
         }
     }
 
-    // MARK: - Listing (sessionReadingQueue only)
+    // MARK: - Listing and refreshing
 
-    private func listRecentSessionsOnReadingQueue() -> [ClickyClaudeCodeSessionListing] {
+    /// The newest session files by modification date. Reads folder listings
+    /// only, never a session file.
+    private func mostRecentSessionFiles() -> [(sessionFileURL: URL, modificationDate: Date)] {
         let fileManager = FileManager.default
         guard let projectFolderURLs = try? fileManager.contentsOfDirectory(
-            at: Self.projectsFolderURL,
+            at: projectsFolderURL,
             includingPropertiesForKeys: nil
         ) else { return [] }
 
@@ -151,33 +207,57 @@ nonisolated final class ClickyClaudeCodeSessionReader: @unchecked Sendable {
             }
         }
         sessionFiles.sort { $0.modificationDate > $1.modificationDate }
+        return Array(sessionFiles.prefix(Self.maximumSessionsInList))
+    }
 
+    private func listRecentSessionsFromWhatHasBeenRead() -> [ClickyClaudeCodeSessionListing] {
+        let recentSessionFiles = mostRecentSessionFiles()
         let idsOfSessionsOpenRightNow = readIDsOfSessionsOpenRightNow()
-        var sessionListings: [ClickyClaudeCodeSessionListing] = []
-        for sessionFile in sessionFiles.prefix(Self.maximumSessionsInList) {
+        let parsedSessionFilesReadSoFar = withParsedSessionFilesLock { parsedSessionFilesByPath }
+
+        return recentSessionFiles.map { sessionFile in
             let sessionID = sessionFile.sessionFileURL.deletingPathExtension().lastPathComponent
-            let parsedSessionFile = parsedSessionFile(at: sessionFile.sessionFileURL)
-            sessionListings.append(ClickyClaudeCodeSessionListing(
+            // A title read a while ago is still used when the file has grown
+            // since: titles rarely change, and a question must never wait for
+            // a session file to be read.
+            let contentReadSoFar = parsedSessionFilesReadSoFar[sessionFile.sessionFileURL.path]?.content
+            return ClickyClaudeCodeSessionListing(
                 sessionID: sessionID,
                 shortSessionID: String(sessionID.prefix(8)),
                 sessionFileURL: sessionFile.sessionFileURL,
-                title: parsedSessionFile?.title ?? "(untitled)",
-                folderName: parsedSessionFile?.folderName ?? "?",
+                title: contentReadSoFar?.title ?? "(untitled)",
+                folderName: contentReadSoFar?.folderName ?? "?",
                 lastActiveDate: sessionFile.modificationDate,
                 isOpenRightNow: idsOfSessionsOpenRightNow.contains(sessionID)
-            ))
+            )
+        }
+    }
+
+    private func refreshRecentSessionsOnRefreshQueue() {
+        // Newest first, so the sessions the user is most likely to ask about
+        // have their titles soonest.
+        let recentSessionFiles = mostRecentSessionFiles()
+        for sessionFile in recentSessionFiles {
+            _ = parsedSessionFile(at: sessionFile.sessionFileURL)
         }
 
         // Forget files that dropped out of the list, so the cache stays small.
-        let pathsStillListed = Set(sessionListings.map { $0.sessionFileURL.path })
-        parsedSessionFilesByPath = parsedSessionFilesByPath.filter { pathsStillListed.contains($0.key) }
-        return sessionListings
+        let pathsStillListed = Set(recentSessionFiles.map { $0.sessionFileURL.path })
+        withParsedSessionFilesLock {
+            parsedSessionFilesByPath = parsedSessionFilesByPath.filter { pathsStillListed.contains($0.key) }
+        }
+    }
+
+    private func withParsedSessionFilesLock<Result>(_ accessParsedSessionFiles: () -> Result) -> Result {
+        parsedSessionFilesLock.lock()
+        defer { parsedSessionFilesLock.unlock() }
+        return accessParsedSessionFiles()
     }
 
     /// Claude Code keeps one small JSON file per running session.
     private func readIDsOfSessionsOpenRightNow() -> Set<String> {
         let registryFileURLs = (try? FileManager.default.contentsOfDirectory(
-            at: Self.runningSessionsFolderURL,
+            at: runningSessionsFolderURL,
             includingPropertiesForKeys: nil
         )) ?? []
         var idsOfSessionsOpenRightNow: Set<String> = []
@@ -203,16 +283,16 @@ nonisolated final class ClickyClaudeCodeSessionReader: @unchecked Sendable {
         }
     }
 
-    // MARK: - Digest (sessionReadingQueue only)
+    // MARK: - Digest (sessionDigestQueue only)
 
-    private func buildDigestOnReadingQueue(ofSession sessionListing: ClickyClaudeCodeSessionListing) -> ClickyClaudeCodeSessionDigestResult {
+    private func buildDigestOnDigestQueue(ofSession sessionListing: ClickyClaudeCodeSessionListing) -> ClickyClaudeCodeSessionDigestResult {
         let digestStartDate = Date()
-        guard let parsedSessionFile = parsedSessionFile(at: sessionListing.sessionFileURL) else {
+        guard let sessionFileContent = parsedSessionFile(at: sessionListing.sessionFileURL)?.content else {
             return .couldNotReadSession(reason: "the session file could not be read")
         }
 
-        var summaryText = parsedSessionFile.latestSummaryText
-        var conversationLines = parsedSessionFile.messagesAfterLatestSummary.map { "\($0.speakerName): \($0.messageText)" }
+        var summaryText = sessionFileContent.latestSummaryText
+        var conversationLines = sessionFileContent.messagesAfterLatestSummary.map { "\($0.speakerName): \($0.messageText)" }
         var olderMessagesLeftOutNote = ""
 
         // The newest messages matter most, so the summary gets at most 40% of
@@ -235,7 +315,7 @@ nonisolated final class ClickyClaudeCodeSessionReader: @unchecked Sendable {
         conversationLines = keptConversationLines
 
         let lastActiveDescription = Self.describeHowLongAgo(sessionListing.lastActiveDate, now: Date())
-        var digestText = "session \"\(parsedSessionFile.title ?? "(untitled)")\" in folder \(parsedSessionFile.folderName ?? "?"), \(lastActiveDescription).\n"
+        var digestText = "session \"\(sessionFileContent.title ?? "(untitled)")\" in folder \(sessionFileContent.folderName ?? "?"), \(lastActiveDescription).\n"
         if !summaryText.isEmpty {
             digestText += "\nsummary of the earlier part of this session, written when its context filled up:\n" + summaryText + "\n"
         }
@@ -247,7 +327,7 @@ nonisolated final class ClickyClaudeCodeSessionReader: @unchecked Sendable {
         )
     }
 
-    // MARK: - Reading one session file (sessionReadingQueue only)
+    // MARK: - Reading one session file (any of the queues)
 
     private static let newlineByte = UInt8(ascii: "\n")
     private static let customTitleMarker = Data("\"custom-title\"".utf8)
@@ -258,86 +338,139 @@ nonisolated final class ClickyClaudeCodeSessionReader: @unchecked Sendable {
         pattern: "<system-reminder>.*?</system-reminder>",
         options: [.dotMatchesLineSeparators]
     )
+    /// How many bytes before the read position are kept to notice a rewritten file.
+    private static let rewriteCheckByteCount = 64
 
-    /// Returns the cached result when the file hasn't changed, otherwise reads it.
+    /// What a session file holds right now. Returns the saved result when the
+    /// file hasn't changed. When it has grown, only the new lines are read.
+    /// Safe to call from several queues at once: two callers may read the same
+    /// file at the same moment, which wastes a little work but is correct.
     private func parsedSessionFile(at sessionFileURL: URL) -> ParsedSessionFile? {
         let fileAttributes = try? FileManager.default.attributesOfItem(atPath: sessionFileURL.path)
         let fileModificationDate = fileAttributes?[.modificationDate] as? Date ?? .distantPast
         let fileByteCount = (fileAttributes?[.size] as? NSNumber)?.intValue ?? 0
 
-        if let cachedParsedSessionFile = parsedSessionFilesByPath[sessionFileURL.path],
-           cachedParsedSessionFile.fileModificationDate == fileModificationDate,
-           cachedParsedSessionFile.fileByteCount == fileByteCount {
-            return cachedParsedSessionFile
+        let parsedSessionFileFromLastRead = withParsedSessionFilesLock { parsedSessionFilesByPath[sessionFileURL.path] }
+        if let parsedSessionFileFromLastRead,
+           parsedSessionFileFromLastRead.fileModificationDate == fileModificationDate,
+           parsedSessionFileFromLastRead.fileByteCount == fileByteCount {
+            return parsedSessionFileFromLastRead
         }
 
+        // Mapped, not loaded: only the part that is actually read is brought in.
         guard let sessionFileData = try? Data(contentsOf: sessionFileURL, options: .mappedIfSafe) else { return nil }
 
-        var title: String?
-        var folderName: String?
-        var latestSummaryText = ""
-        var messagesAfterLatestSummary: [(speakerName: String, messageText: String)] = []
-
-        for lineData in sessionFileData.split(separator: Self.newlineByte) {
-            // Most of the file is tool output and bookkeeping. Checking for a
-            // marker first avoids decoding megabytes of JSON we would skip anyway.
-            let isTitleLine = Self.bytes(of: lineData.prefix(300), contain: Self.customTitleMarker)
-            let mightBeConversationLine = Self.bytes(of: lineData, contain: Self.userEntryMarker)
-                || Self.bytes(of: lineData, contain: Self.assistantEntryMarker)
-            guard isTitleLine || mightBeConversationLine else { continue }
-
-            // A live session's last line can be half written: skip what doesn't decode.
-            guard let entry = (try? JSONSerialization.jsonObject(with: lineData)) as? [String: Any] else { continue }
-            let entryType = entry["type"] as? String
-
-            if entryType == "custom-title" {
-                if let customTitle = entry["customTitle"] as? String, !customTitle.isEmpty {
-                    title = customTitle
-                }
-                continue
-            }
-
-            // Sidechains are subagents talking to Claude; meta entries are the app's own notes.
-            guard entryType == "user" || entryType == "assistant",
-                  entry["isSidechain"] as? Bool != true,
-                  entry["isMeta"] as? Bool != true else { continue }
-
-            if let workingDirectoryPath = entry["cwd"] as? String, !workingDirectoryPath.isEmpty {
-                folderName = URL(fileURLWithPath: workingDirectoryPath).lastPathComponent
-            }
-
-            let messageText = Self.typedTextOfEntry(entry)
-            guard !messageText.isEmpty,
-                  !messageText.hasPrefix("[SYSTEM NOTIFICATION"),
-                  !messageText.hasPrefix("<task-notification>") else { continue }
-
-            if entry["isCompactSummary"] as? Bool == true {
-                // A newer summary replaces everything before it.
-                latestSummaryText = messageText
-                messagesAfterLatestSummary = []
-            } else {
-                messagesAfterLatestSummary.append((
-                    speakerName: entryType == "user" ? "user" : "claude",
-                    messageText: messageText
-                ))
-            }
+        // Continue from the last read when the file was only added to.
+        var sessionFileContent = SessionFileContent()
+        var byteCountReadSoFar = 0
+        if let parsedSessionFileFromLastRead,
+           Self.sessionFileData(sessionFileData, stillBeginsWithWhatWasRead: parsedSessionFileFromLastRead) {
+            sessionFileContent = parsedSessionFileFromLastRead.content
+            byteCountReadSoFar = parsedSessionFileFromLastRead.byteCountReadSoFar
         }
 
+        // Only lines that end in a newline are read. A live session's last line
+        // can be half written; it is picked up by the next read, once complete.
+        // Reading it now would count it twice.
+        let unreadData = sessionFileData[byteCountReadSoFar...]
+        if let lastNewlineIndex = unreadData.lastIndex(of: Self.newlineByte) {
+            for lineData in sessionFileData[byteCountReadSoFar..<lastNewlineIndex].split(separator: Self.newlineByte) {
+                Self.addLine(lineData, to: &sessionFileContent)
+            }
+            // A slice of Data keeps the positions of the whole file, so this
+            // index is already a position in the file.
+            byteCountReadSoFar = lastNewlineIndex + 1
+        }
+
+        let rewriteCheckStart = max(0, byteCountReadSoFar - Self.rewriteCheckByteCount)
         let parsedSessionFile = ParsedSessionFile(
             fileModificationDate: fileModificationDate,
             fileByteCount: fileByteCount,
-            title: title,
-            folderName: folderName,
-            latestSummaryText: latestSummaryText,
-            messagesAfterLatestSummary: messagesAfterLatestSummary
+            byteCountReadSoFar: byteCountReadSoFar,
+            bytesJustBeforeReadPosition: Data(sessionFileData[rewriteCheckStart..<byteCountReadSoFar]),
+            content: sessionFileContent
         )
-        parsedSessionFilesByPath[sessionFileURL.path] = parsedSessionFile
+        withParsedSessionFilesLock {
+            // Another queue may have saved a read of a newer state of this file
+            // while this one was running. Keep that one.
+            if let parsedSessionFileSavedMeanwhile = parsedSessionFilesByPath[sessionFileURL.path],
+               parsedSessionFileSavedMeanwhile.fileModificationDate > fileModificationDate {
+                return
+            }
+            parsedSessionFilesByPath[sessionFileURL.path] = parsedSessionFile
+        }
         return parsedSessionFile
+    }
+
+    /// Whether the file still starts with everything the last read covered. A
+    /// file that got shorter, or whose bytes just before the read position
+    /// changed, was rewritten, and continuing from the middle would be wrong.
+    private static func sessionFileData(_ sessionFileData: Data, stillBeginsWithWhatWasRead parsedSessionFileFromLastRead: ParsedSessionFile) -> Bool {
+        let byteCountReadSoFar = parsedSessionFileFromLastRead.byteCountReadSoFar
+        guard byteCountReadSoFar <= sessionFileData.count else { return false }
+        let bytesExpectedBeforeReadPosition = parsedSessionFileFromLastRead.bytesJustBeforeReadPosition
+        let rewriteCheckStart = byteCountReadSoFar - bytesExpectedBeforeReadPosition.count
+        guard rewriteCheckStart >= 0 else { return false }
+        return sessionFileData[rewriteCheckStart..<byteCountReadSoFar].elementsEqual(bytesExpectedBeforeReadPosition)
+    }
+
+    /// Takes in one line of a session file: a title, a summary, or something
+    /// the user or Claude typed. Everything else is skipped.
+    private static func addLine(_ lineData: Data, to sessionFileContent: inout SessionFileContent) {
+        // Most of the file is tool output and bookkeeping. Checking for a
+        // marker first avoids decoding megabytes of JSON we would skip anyway.
+        let isTitleLine = bytes(of: lineData.prefix(300), contain: customTitleMarker)
+        let mightBeConversationLine = bytes(of: lineData, contain: userEntryMarker)
+            || bytes(of: lineData, contain: assistantEntryMarker)
+        guard isTitleLine || mightBeConversationLine else { return }
+
+        // Skip what doesn't decode.
+        guard let entry = (try? JSONSerialization.jsonObject(with: lineData)) as? [String: Any] else { return }
+        let entryType = entry["type"] as? String
+
+        if entryType == "custom-title" {
+            if let customTitle = entry["customTitle"] as? String, !customTitle.isEmpty {
+                sessionFileContent.title = customTitle
+            }
+            return
+        }
+
+        // Sidechains are subagents talking to Claude; meta entries are the app's own notes.
+        guard entryType == "user" || entryType == "assistant",
+              entry["isSidechain"] as? Bool != true,
+              entry["isMeta"] as? Bool != true else { return }
+
+        if let workingDirectoryPath = entry["cwd"] as? String, !workingDirectoryPath.isEmpty {
+            // Taken from the text of the path, never by building a file URL:
+            // URL(fileURLWithPath:) asks the file system whether the path is a
+            // folder, once per message. For a session that ran on a Linux
+            // machine the path starts with /home, which macOS treats as a
+            // network mount point, and each of those checks took 6 ms. That
+            // was 30 seconds across the recent sessions, and it is what once
+            // held a question up for 38 seconds.
+            sessionFileContent.folderName = (workingDirectoryPath as NSString).lastPathComponent
+        }
+
+        let messageText = typedTextOfEntry(entry)
+        guard !messageText.isEmpty,
+              !messageText.hasPrefix("[SYSTEM NOTIFICATION"),
+              !messageText.hasPrefix("<task-notification>") else { return }
+
+        if entry["isCompactSummary"] as? Bool == true {
+            // A newer summary replaces everything before it.
+            sessionFileContent.latestSummaryText = messageText
+            sessionFileContent.messagesAfterLatestSummary = []
+        } else {
+            sessionFileContent.messagesAfterLatestSummary.append((
+                speakerName: entryType == "user" ? "user" : "claude",
+                messageText: messageText
+            ))
+        }
     }
 
     /// Whether a byte sequence appears in a line. Uses the C library's search
     /// because lines can be megabytes long and Data.range(of:) is several times
-    /// slower, which matters when a live 30 MB session is re-read every question.
+    /// slower, which matters on the first read of a session of 100 MB or more.
     private static func bytes(of lineData: Data, contain markerData: Data) -> Bool {
         return lineData.withUnsafeBytes { (lineBytes: UnsafeRawBufferPointer) -> Bool in
             markerData.withUnsafeBytes { (markerBytes: UnsafeRawBufferPointer) -> Bool in
