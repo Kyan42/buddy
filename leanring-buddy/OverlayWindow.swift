@@ -110,6 +110,9 @@ struct BlueCursorView: View {
     @State private var bubbleSize: CGSize = .zero
     @State private var bubbleOpacity: Double = 1.0
     @State private var cursorOpacity: Double = 0.0
+    /// Whether macOS is hiding the mouse pointer right now (it does while you
+    /// type or watch a video). Kept current by the cursor tracking timer.
+    @State private var isMousePointerHidden: Bool = false
 
     // MARK: - Buddy Navigation State
 
@@ -300,7 +303,10 @@ struct BlueCursorView: View {
                 flightScale: buddyFlightScale
             )
                 .scaleEffect(buddyFlightScale)
-                .opacity(buddyIsVisibleOnThisScreen ? cursorOpacity : 0)
+                .opacity(buddyIsVisibleOnThisScreen && !isBuddyHiddenAlongWithMousePointer ? cursorOpacity : 0)
+                // A short fade, so Buddy slips away and returns with the mouse
+                // pointer without popping.
+                .animation(.easeInOut(duration: 0.2), value: isBuddyHiddenAlongWithMousePointer)
                 .position(cursorPosition)
                 .animation(
                     buddyNavigationMode == .followingCursor
@@ -405,6 +411,17 @@ struct BlueCursorView: View {
     }
 
     /// Whether the buddy should be visible on this screen.
+    /// Buddy goes out of sight with the mouse pointer and comes back with it,
+    /// so it is not left floating over a video or the text you are typing.
+    /// Only while it is idle beside the pointer: when Buddy is listening,
+    /// thinking, talking or pointing at something, it stays where you can see it.
+    private var isBuddyHiddenAlongWithMousePointer: Bool {
+        return isMousePointerHidden
+            && buddyNavigationMode == .followingCursor
+            && companionManager.voiceState == .idle
+            && !companionManager.isClickySpeakingAloud
+    }
+
     /// True when cursor is on this screen during normal following, or
     /// when navigating/pointing at a target on this screen. When another
     /// screen is navigating (detectedElementScreenLocation is set but this
@@ -434,6 +451,12 @@ struct BlueCursorView: View {
         timer = Timer.scheduledTimer(withTimeInterval: 0.016, repeats: true) { _ in
             let mouseLocation = NSEvent.mouseLocation
             self.isCursorOnThisScreen = self.screenFrame.contains(mouseLocation)
+
+            // Written only when it changes, so the view is not redrawn 60 times a second.
+            let isMousePointerHiddenNow = ClickyMousePointerVisibility.isMousePointerHidden
+            if isMousePointerHiddenNow != self.isMousePointerHidden {
+                self.isMousePointerHidden = isMousePointerHiddenNow
+            }
 
             // During forward flight or pointing, the buddy is NOT interrupted by
             // mouse movement — it completes its full animation and return flight.
@@ -883,5 +906,30 @@ class OverlayWindowManager {
 
     func isShowingOverlay() -> Bool {
         return !overlayWindows.isEmpty
+    }
+}
+
+// MARK: - Mouse Pointer Visibility
+
+/// Asks macOS whether the mouse pointer is hidden right now. Apps hide it
+/// while you type or watch a video.
+///
+/// The function for this, CGCursorIsVisible, is still part of CoreGraphics,
+/// but Swift marks it unavailable, so it is looked up by name. If a later
+/// macOS removes it, the lookup finds nothing and the pointer is treated as
+/// always visible, which is how Buddy behaved before this existed.
+private enum ClickyMousePointerVisibility {
+    private typealias CursorIsVisibleFunction = @convention(c) () -> Int32
+
+    private static let cursorIsVisibleFunction: CursorIsVisibleFunction? = {
+        // The same value as C's RTLD_DEFAULT: search everything the app has loaded.
+        let everythingLoadedIntoTheApp = UnsafeMutableRawPointer(bitPattern: -2)
+        guard let cursorIsVisibleSymbol = dlsym(everythingLoadedIntoTheApp, "CGCursorIsVisible") else { return nil }
+        return unsafeBitCast(cursorIsVisibleSymbol, to: CursorIsVisibleFunction.self)
+    }()
+
+    static var isMousePointerHidden: Bool {
+        guard let cursorIsVisibleFunction else { return false }
+        return cursorIsVisibleFunction() == 0
     }
 }
